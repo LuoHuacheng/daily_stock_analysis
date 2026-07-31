@@ -40,7 +40,13 @@ DSA_ENRICHMENT_MAX_CANDIDATES = 3
 DSA_PRE_RANK_CONTEXT_MAX_CANDIDATES = 3
 DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER = 2
 DSA_ALPHASIFT_LLM_MAX_CANDIDATES = 12
-DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 3
+# Daily enrichment occurs after snapshot filtering. Keep its failure budget
+# bounded so a degraded remote provider cannot hold an entire screen task.
+DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 1
+DSA_ALPHASIFT_DAILY_FETCH_MAX_WORKERS = 4
+DSA_ALPHASIFT_DAILY_CALL_TIMEOUT_SECONDS = 8
+DSA_ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS = 24
+_DSA_DAILY_HISTORY_TIMEOUT_SLOTS = threading.BoundedSemaphore(DSA_ALPHASIFT_DAILY_FETCH_MAX_WORKERS)
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS = "news,fund_flow,announcement,quote"
@@ -1860,9 +1866,12 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
         lookback_days: int = 120,
         source: str = "akshare",
         retries: int = 2,
+        cache_dir: Any = None,
+        cache_ttl_seconds: Any = None,
+        **kwargs: Any,
     ) -> Any:
         try:
-            dsa_df, dsa_source = get_dsa_daily_history(code, lookback_days=lookback_days)
+            dsa_df, dsa_source = _get_dsa_daily_history_with_timeout(code, lookback_days=lookback_days)
             normalized = _normalize_dsa_daily_history(dsa_df)
             if normalized is not None and not normalized.empty:
                 normalized.attrs["source"] = f"dsa:{dsa_source}"
@@ -1874,7 +1883,15 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
                 source,
                 exc,
             )
-        return original_fetch(code, lookback_days=lookback_days, source=source, retries=retries)
+        return original_fetch(
+            code,
+            lookback_days=lookback_days,
+            source=source,
+            retries=retries,
+            cache_dir=cache_dir,
+            cache_ttl_seconds=cache_ttl_seconds,
+            **kwargs,
+        )
 
     with _ALPHASIFT_RUNTIME_ENV_LOCK:
         setattr(daily_module, "fetch_daily_history", fetch_daily_history_with_dsa)
@@ -1958,7 +1975,8 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
     put("OPENAI_BASE_URL", config.openai_base_url or _first_channel_base_url(channels, {"openai"}))
     put_default("DAILY_SOURCE", "auto")
     put_default("DAILY_FETCH_RETRIES", str(DSA_ALPHASIFT_DAILY_FETCH_RETRIES))
-    put_default("DAILY_FETCH_MAX_WORKERS", "1")
+    put_default("DAILY_FETCH_MAX_WORKERS", str(DSA_ALPHASIFT_DAILY_FETCH_MAX_WORKERS))
+    put_default("ALPHASIFT_DAILY_CALL_TIMEOUT_SEC", str(DSA_ALPHASIFT_DAILY_CALL_TIMEOUT_SECONDS))
     put("LLM_CANDIDATE_CONTEXT_ENABLED", "false")
     put_default("LLM_CANDIDATE_CONTEXT_PROVIDERS", DSA_ALPHASIFT_CANDIDATE_CONTEXT_PROVIDERS)
     put_default("LLM_CANDIDATE_MULTIPLIER", str(DSA_ALPHASIFT_LLM_CANDIDATE_MULTIPLIER))
@@ -1968,6 +1986,7 @@ def _build_alphasift_runtime_env(config: Config, *, max_results: Optional[int] =
     put_default("ALPHASIFT_DATA_DIR", str(alphasift_data_dir))
     put_default("ALPHASIFT_FALLBACK_SNAPSHOT_PATH", str(alphasift_data_dir / "snapshot.last_good.json"))
     put_default("ALPHASIFT_DAILY_HISTORY_CACHE_DIR", str(alphasift_data_dir / "daily_history"))
+    put_default("ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS", str(DSA_ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS))
     put_default("ALPHASIFT_INDUSTRY_PROVIDER_CACHE_DIR", str(alphasift_data_dir / "industry_provider_cache"))
     return env
 
@@ -3180,6 +3199,42 @@ def get_dsa_daily_history(stock_code: str, *, lookback_days: int = 120) -> Tuple
     normalized_code = _env_text(stock_code).zfill(6)
     days = max(int(lookback_days or 0), 30)
     return load_history_df(normalized_code, days=days)
+
+
+def _get_dsa_daily_history_with_timeout(stock_code: str, *, lookback_days: int) -> Tuple[Any, str]:
+    """Bound DSA's multi-source history lookup before native fallback runs.
+
+    A timed-out network call cannot be cancelled safely. Retaining the slot
+    until its daemon thread exits prevents repeated screen requests from
+    creating an unbounded number of stranded calls.
+    """
+    timeout_seconds = DSA_ALPHASIFT_DAILY_CALL_TIMEOUT_SECONDS
+    if not _DSA_DAILY_HISTORY_TIMEOUT_SLOTS.acquire(blocking=False):
+        raise TimeoutError("DSA daily history timeout worker pool exhausted")
+
+    result: Dict[str, Tuple[Any, str]] = {}
+    error: Dict[str, Exception] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = get_dsa_daily_history(stock_code, lookback_days=lookback_days)
+        except Exception as exc:  # noqa: BLE001 - preserved for fallback diagnostics
+            error["value"] = exc
+        finally:
+            _DSA_DAILY_HISTORY_TIMEOUT_SLOTS.release()
+
+    worker = threading.Thread(target=run, daemon=True, name="alphasift-dsa-daily")
+    try:
+        worker.start()
+    except Exception:
+        _DSA_DAILY_HISTORY_TIMEOUT_SLOTS.release()
+        raise
+    worker.join(timeout=timeout_seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"DSA daily history timed out after {timeout_seconds}s")
+    if "value" in error:
+        raise error["value"]
+    return result["value"]
 
 
 def _normalize_dsa_daily_history(raw_df: Any) -> Any:

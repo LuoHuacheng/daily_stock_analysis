@@ -1942,6 +1942,8 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 lookback_days=20,
                 source="akshare",
                 retries=1,
+                cache_dir="/tmp/alphasift-daily-cache",
+                cache_ttl_seconds=300,
             )
             captured["daily_df"] = daily_df
             captured["context"] = kwargs.get("context")
@@ -1982,6 +1984,69 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         dsa_history_mock.assert_called_once_with("600519", lookback_days=20)
         original_daily_fetch.assert_not_called()
         self.assertIs(daily_module.fetch_daily_history, original_daily_fetch)
+
+    def test_daily_history_provider_forwards_cache_parameters_to_native_fallback(self) -> None:
+        parent_module = ModuleType("alphasift")
+        daily_module = ModuleType("alphasift.daily")
+        original_daily_fetch = MagicMock(return_value="native-fallback")
+        daily_module.fetch_daily_history = original_daily_fetch
+        parent_module.daily = daily_module
+
+        with (
+            patch.dict(sys.modules, {"alphasift": parent_module, "alphasift.daily": daily_module}),
+            patch(
+                "src.services.alphasift_service.get_dsa_daily_history",
+                side_effect=RuntimeError("DSA unavailable"),
+            ),
+            alphasift_service._alphasift_dsa_daily_history_provider(),
+        ):
+            result = daily_module.fetch_daily_history(
+                "601127",
+                lookback_days=120,
+                source="auto",
+                retries=3,
+                cache_dir="/tmp/alphasift-daily-cache",
+                cache_ttl_seconds=1800,
+                future_optional_parameter="preserved",
+            )
+
+        self.assertEqual(result, "native-fallback")
+        original_daily_fetch.assert_called_once_with(
+            "601127",
+            lookback_days=120,
+            source="auto",
+            retries=3,
+            cache_dir="/tmp/alphasift-daily-cache",
+            cache_ttl_seconds=1800,
+            future_optional_parameter="preserved",
+        )
+
+    def test_daily_history_provider_falls_back_when_dsa_history_times_out(self) -> None:
+        parent_module = ModuleType("alphasift")
+        daily_module = ModuleType("alphasift.daily")
+        original_daily_fetch = MagicMock(return_value="native-fallback")
+        daily_module.fetch_daily_history = original_daily_fetch
+        parent_module.daily = daily_module
+
+        with (
+            patch.dict(sys.modules, {"alphasift": parent_module, "alphasift.daily": daily_module}),
+            patch(
+                "src.services.alphasift_service._get_dsa_daily_history_with_timeout",
+                side_effect=TimeoutError("DSA daily history timed out after 8s"),
+            ),
+            alphasift_service._alphasift_dsa_daily_history_provider(),
+        ):
+            result = daily_module.fetch_daily_history("601127", source="auto")
+
+        self.assertEqual(result, "native-fallback")
+        original_daily_fetch.assert_called_once_with(
+            "601127",
+            lookback_days=120,
+            source="auto",
+            retries=2,
+            cache_dir=None,
+            cache_ttl_seconds=None,
+        )
 
     def test_screen_enriches_top_candidates_with_dsa_context(self) -> None:
         config = self._config(enabled=True)
@@ -2257,10 +2322,12 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 "DAILY_SOURCE": alphasift_service.os.environ.get("DAILY_SOURCE"),
                 "DAILY_FETCH_RETRIES": alphasift_service.os.environ.get("DAILY_FETCH_RETRIES"),
                 "DAILY_FETCH_MAX_WORKERS": alphasift_service.os.environ.get("DAILY_FETCH_MAX_WORKERS"),
+                "ALPHASIFT_DAILY_CALL_TIMEOUT_SEC": alphasift_service.os.environ.get("ALPHASIFT_DAILY_CALL_TIMEOUT_SEC"),
                 "SNAPSHOT_SOURCE_PRIORITY": alphasift_service.os.environ.get("SNAPSHOT_SOURCE_PRIORITY"),
                 "ALPHASIFT_DATA_DIR": alphasift_service.os.environ.get("ALPHASIFT_DATA_DIR"),
                 "ALPHASIFT_FALLBACK_SNAPSHOT_PATH": alphasift_service.os.environ.get("ALPHASIFT_FALLBACK_SNAPSHOT_PATH"),
                 "ALPHASIFT_DAILY_HISTORY_CACHE_DIR": alphasift_service.os.environ.get("ALPHASIFT_DAILY_HISTORY_CACHE_DIR"),
+                "ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS": alphasift_service.os.environ.get("ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS"),
                 "ALPHASIFT_INDUSTRY_PROVIDER_CACHE_DIR": alphasift_service.os.environ.get("ALPHASIFT_INDUSTRY_PROVIDER_CACHE_DIR"),
             }
             captured["context"] = kwargs.get("context")
@@ -2301,8 +2368,9 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
         self.assertEqual(runtime_env["LLM_CANDIDATE_MULTIPLIER"], "2")
         self.assertEqual(runtime_env["LLM_MAX_CANDIDATES"], "10")
         self.assertEqual(runtime_env["DAILY_SOURCE"], "auto")
-        self.assertEqual(runtime_env["DAILY_FETCH_RETRIES"], "3")
-        self.assertEqual(runtime_env["DAILY_FETCH_MAX_WORKERS"], "1")
+        self.assertEqual(runtime_env["DAILY_FETCH_RETRIES"], "1")
+        self.assertEqual(runtime_env["DAILY_FETCH_MAX_WORKERS"], "4")
+        self.assertEqual(runtime_env["ALPHASIFT_DAILY_CALL_TIMEOUT_SEC"], "8")
         self.assertEqual(runtime_env["SNAPSHOT_SOURCE_PRIORITY"], "sina,efinance,akshare_em,em_datacenter")
         self.assertEqual(runtime_env["ALPHASIFT_DATA_DIR"], str(alphasift_service.DSA_ALPHASIFT_DATA_DIR))
         self.assertEqual(
@@ -2313,6 +2381,7 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
             runtime_env["ALPHASIFT_DAILY_HISTORY_CACHE_DIR"],
             str(alphasift_service.DSA_ALPHASIFT_DATA_DIR / "daily_history"),
         )
+        self.assertEqual(runtime_env["ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS"], "24")
         self.assertEqual(
             runtime_env["ALPHASIFT_INDUSTRY_PROVIDER_CACHE_DIR"],
             str(alphasift_service.DSA_ALPHASIFT_DATA_DIR / "industry_provider_cache"),
