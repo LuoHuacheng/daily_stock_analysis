@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, Dict, List
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 import threading
 
 from fastapi import FastAPI, HTTPException
@@ -1962,10 +1962,11 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
                 return_value=(
                     [
                         {
-                            "trade_date": "20260603",
+                            "trade_date": f"2026{(index // 30) + 4:02d}{(index % 30) + 1:02d}",
                             "close": "10.5",
                             "vol": "123400",
                         }
+                        for index in range(60)
                     ],
                     "EfinanceFetcher",
                 ),
@@ -1975,7 +1976,8 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
 
         daily_df = captured["daily_df"]
         self.assertEqual(daily_df.attrs["source"], "dsa:EfinanceFetcher")
-        self.assertEqual(daily_df.loc[0, "date"], "2026-06-03")
+        self.assertEqual(len(daily_df), 60)
+        self.assertEqual(daily_df.loc[0, "date"], "2026-04-01")
         self.assertEqual(daily_df.loc[0, "volume"], 123400)
         self.assertEqual(daily_df.loc[0, "open"], 10.5)
         self.assertEqual(payload["candidate_count"], 1)
@@ -2047,6 +2049,98 @@ class AlphaSiftOpportunitiesApiTestCase(unittest.TestCase):
             cache_dir=None,
             cache_ttl_seconds=None,
         )
+
+    def test_daily_history_provider_retries_native_sources_when_dsa_history_is_too_short_for_ma60(self) -> None:
+        import pandas as pd
+
+        parent_module = ModuleType("alphasift")
+        daily_module = ModuleType("alphasift.daily")
+        short_history = pd.DataFrame({"close": range(1, 30)})
+        short_history.attrs["daily_source"] = "tencent"
+        complete_history = pd.DataFrame({"close": range(1, 61)})
+        complete_history.attrs["daily_source"] = "sina"
+        original_daily_fetch = MagicMock(side_effect=[short_history, complete_history])
+        daily_module.fetch_daily_history = original_daily_fetch
+        parent_module.daily = daily_module
+
+        with (
+            patch.dict(sys.modules, {"alphasift": parent_module, "alphasift.daily": daily_module}),
+            patch(
+                "src.services.alphasift_service.get_dsa_daily_history",
+                return_value=(pd.DataFrame({"close": range(1, 30)}), "EfinanceFetcher"),
+            ),
+            alphasift_service._alphasift_dsa_daily_history_provider(),
+        ):
+            result = daily_module.fetch_daily_history("601127", source="auto")
+
+        self.assertIs(result, complete_history)
+        self.assertEqual(
+            original_daily_fetch.call_args_list,
+            [
+                call(
+                    "601127",
+                    lookback_days=120,
+                    source="auto",
+                    retries=2,
+                    cache_dir=None,
+                    cache_ttl_seconds=None,
+                ),
+                call(
+                    "601127",
+                    lookback_days=120,
+                    source="sina",
+                    retries=2,
+                    cache_dir=None,
+                    cache_ttl_seconds=None,
+                ),
+            ],
+        )
+
+    def test_short_history_fallback_can_pass_actual_alphasift_ma60_filter(self) -> None:
+        import pandas as pd
+        from alphasift.daily import compute_daily_features
+        from alphasift.filter import apply_hard_filters
+        from alphasift.models import HardFilterConfig
+        import alphasift.daily as daily_module
+
+        def history_frame(rows: int) -> pd.DataFrame:
+            close = list(range(100, 100 + rows))
+            return pd.DataFrame(
+                {
+                    "date": pd.date_range("2026-01-01", periods=rows, freq="B"),
+                    "open": close,
+                    "high": [price + 1 for price in close],
+                    "low": [price - 1 for price in close],
+                    "close": close,
+                    "volume": [1000] * rows,
+                }
+            )
+
+        short_dsa = history_frame(29)
+        short_tencent = history_frame(29)
+        short_tencent.attrs["daily_source"] = "tencent"
+        complete_sina = history_frame(60)
+        complete_sina.attrs["daily_source"] = "sina"
+        original_daily_fetch = MagicMock(side_effect=[short_tencent, complete_sina])
+
+        with (
+            patch.object(daily_module, "fetch_daily_history", original_daily_fetch),
+            patch(
+                "src.services.alphasift_service.get_dsa_daily_history",
+                return_value=(short_dsa, "EfinanceFetcher"),
+            ),
+            alphasift_service._alphasift_dsa_daily_history_provider(),
+        ):
+            selected_history = daily_module.fetch_daily_history("601127", source="auto")
+
+        features = compute_daily_features(selected_history)
+        self.assertTrue(features["ma_bullish"])
+        filtered = apply_hard_filters(
+            pd.DataFrame([{"code": "601127", **features}]),
+            HardFilterConfig(exclude_st=False, require_ma_bullish=True),
+        )
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(selected_history.attrs["daily_source"], "sina")
 
     def test_screen_enriches_top_candidates_with_dsa_context(self) -> None:
         config = self._config(enabled=True)

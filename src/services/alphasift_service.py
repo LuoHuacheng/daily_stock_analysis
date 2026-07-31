@@ -46,6 +46,10 @@ DSA_ALPHASIFT_DAILY_FETCH_RETRIES = 1
 DSA_ALPHASIFT_DAILY_FETCH_MAX_WORKERS = 4
 DSA_ALPHASIFT_DAILY_CALL_TIMEOUT_SECONDS = 8
 DSA_ALPHASIFT_DAILY_HISTORY_CACHE_TTL_HOURS = 24
+# AlphaSift's MA-bullish hard filter compares MA5, MA20, and MA60. A source
+# with fewer than 60 bars cannot evaluate that filter and must not win merely
+# because it returned a non-empty frame.
+DSA_ALPHASIFT_DAILY_MIN_BARS_FOR_MA_FILTERS = 60
 _DSA_DAILY_HISTORY_TIMEOUT_SLOTS = threading.BoundedSemaphore(DSA_ALPHASIFT_DAILY_FETCH_MAX_WORKERS)
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY = "sina,efinance,akshare_em,em_datacenter"
 DSA_ALPHASIFT_SNAPSHOT_SOURCE_PRIORITY_WITH_TUSHARE = "tushare,sina,efinance,akshare_em,em_datacenter"
@@ -1873,9 +1877,18 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
         try:
             dsa_df, dsa_source = _get_dsa_daily_history_with_timeout(code, lookback_days=lookback_days)
             normalized = _normalize_dsa_daily_history(dsa_df)
-            if normalized is not None and not normalized.empty:
+            if _has_minimum_daily_history(normalized):
                 normalized.attrs["source"] = f"dsa:{dsa_source}"
                 return normalized
+            if normalized is not None and not normalized.empty:
+                logger.info(
+                    "AlphaSift DSA daily history for %s has %d bars, below the %d needed for MA filters; "
+                    "falling back to AlphaSift source %s",
+                    code,
+                    len(normalized),
+                    DSA_ALPHASIFT_DAILY_MIN_BARS_FOR_MA_FILTERS,
+                    source,
+                )
         except Exception as exc:
             logger.warning(
                 "AlphaSift DSA daily history fetch failed for %s; falling back to AlphaSift source %s: %s",
@@ -1883,7 +1896,7 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
                 source,
                 exc,
             )
-        return original_fetch(
+        primary = original_fetch(
             code,
             lookback_days=lookback_days,
             source=source,
@@ -1892,6 +1905,41 @@ def _alphasift_dsa_daily_history_provider() -> Iterator[None]:
             cache_ttl_seconds=cache_ttl_seconds,
             **kwargs,
         )
+        if source != "auto" or _has_minimum_daily_history(primary):
+            return primary
+
+        primary_source = _env_text(getattr(primary, "attrs", {}).get("daily_source"))
+        for fallback_source in ("sina", "akshare"):
+            if fallback_source == primary_source:
+                continue
+            try:
+                fallback = original_fetch(
+                    code,
+                    lookback_days=lookback_days,
+                    source=fallback_source,
+                    retries=retries,
+                    cache_dir=cache_dir,
+                    cache_ttl_seconds=cache_ttl_seconds,
+                    **kwargs,
+                )
+            except Exception as exc:
+                logger.info(
+                    "AlphaSift daily fallback source %s failed for short Tencent history %s: %s",
+                    fallback_source,
+                    code,
+                    exc,
+                )
+                continue
+            if _has_minimum_daily_history(fallback):
+                logger.info(
+                    "AlphaSift daily fallback source %s supplied %d bars for %s after short %s history",
+                    fallback_source,
+                    len(fallback),
+                    code,
+                    primary_source or "primary",
+                )
+                return fallback
+        return primary
 
     with _ALPHASIFT_RUNTIME_ENV_LOCK:
         setattr(daily_module, "fetch_daily_history", fetch_daily_history_with_dsa)
@@ -3235,6 +3283,22 @@ def _get_dsa_daily_history_with_timeout(stock_code: str, *, lookback_days: int) 
     if "value" in error:
         raise error["value"]
     return result["value"]
+
+
+def _has_minimum_daily_history(raw_df: Any) -> bool:
+    """Return whether a daily frame can evaluate AlphaSift MA60-based filters.
+
+    Non-tabular adapter values are treated as opaque so older adapter contracts
+    keep their existing passthrough behavior.
+    """
+    if raw_df is None:
+        return False
+    if not hasattr(raw_df, "columns"):
+        return True
+    try:
+        return len(raw_df) >= DSA_ALPHASIFT_DAILY_MIN_BARS_FOR_MA_FILTERS
+    except TypeError:
+        return True
 
 
 def _normalize_dsa_daily_history(raw_df: Any) -> Any:
