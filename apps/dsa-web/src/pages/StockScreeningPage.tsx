@@ -38,6 +38,7 @@ import {
   type AlphaSiftStrategy,
 } from '../api/alphasift';
 import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
+import { stocksApi } from '../api/stocks';
 import { AppPage, Button, InlineAlert } from '../components/common';
 
 const MARKETS = [{ id: 'cn', label: 'A 股' }];
@@ -475,6 +476,8 @@ const StockScreeningPage: React.FC = () => {
   const [activeTaskId, setActiveTaskId] = useState<string | null>(restoredTask?.taskId ?? null);
   const [taskProgress, setTaskProgress] = useState(restoredTask?.taskId ? 10 : 0);
   const [taskMessage, setTaskMessage] = useState(restoredTask?.taskId ? '正在恢复选股任务状态...' : '');
+  const [addingCandidatesToWatchlist, setAddingCandidatesToWatchlist] = useState(false);
+  const [watchlistFeedback, setWatchlistFeedback] = useState('');
 
   const selectedStrategy = useMemo(() => strategies.find((item) => item.id === strategy), [strategies, strategy]);
   const selectedStrategyTitle = selectedStrategy?.name || selectedStrategy?.title || '自定义策略';
@@ -501,6 +504,24 @@ const StockScreeningPage: React.FC = () => {
     setCandidates([]);
     setScreenMeta(null);
     setExpandedCode(null);
+    setWatchlistFeedback('');
+  };
+
+  const handleAddCandidatesToWatchlist = async () => {
+    const stockCodes = candidates.map((item) => item.code.trim()).filter(Boolean);
+    if (stockCodes.length === 0) {
+      return;
+    }
+    setAddingCandidatesToWatchlist(true);
+    setWatchlistFeedback('');
+    try {
+      const result = await stocksApi.addManyToWatchlist(stockCodes);
+      setWatchlistFeedback(result.message || `已将 ${stockCodes.length} 只候选加入自选。`);
+    } catch (err) {
+      setWatchlistFeedback(toApiErrorMessage(err, '加入自选失败，请稍后重试。'));
+    } finally {
+      setAddingCandidatesToWatchlist(false);
+    }
   };
 
   const loadHotspotDetail = useCallback(async (topic: string, options: { refresh?: boolean } = {}) => {
@@ -1289,11 +1310,28 @@ const StockScreeningPage: React.FC = () => {
               AlphaSift 返回候选后，DSA 会对前几名补充行情、基本面、新闻和辅助摘要。
             </p>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-2 text-xs text-secondary-text">
-            <Search className="h-4 w-4 text-cyan" />
-            {candidates.length} 条候选
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-full border border-border bg-surface px-3 py-2 text-xs text-secondary-text">
+              <Search className="h-4 w-4 text-cyan" />
+              {candidates.length} 条候选
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              isLoading={addingCandidatesToWatchlist}
+              loadingText="加入中..."
+              disabled={candidates.length === 0}
+              onClick={() => void handleAddCandidatesToWatchlist()}
+            >
+              <PlusCircle className="h-4 w-4" />
+              加入全部候选至自选
+            </Button>
           </div>
         </div>
+
+        {watchlistFeedback ? (
+          <p className="mb-4 text-sm text-secondary-text" role="status">{watchlistFeedback}</p>
+        ) : null}
 
         {candidates.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border bg-surface/70 px-5 py-10 text-center">

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Watchlist API regressions for stock-code variant matching."""
 
-from api.v1.endpoints.stocks import add_to_watchlist, get_watchlist, remove_from_watchlist
-from api.v1.schemas.history import WatchlistRequest
+from api.v1.endpoints.stocks import add_many_to_watchlist, add_to_watchlist, get_watchlist, remove_from_watchlist
+from api.v1.schemas.history import WatchlistBatchRequest, WatchlistRequest
 
 
 class FakeSystemConfigService:
@@ -85,3 +85,17 @@ def test_watchlist_add_normalizes_existing_mixed_separators_on_write() -> None:
     assert response.stock_codes == ["600519", "300750", "AAPL"]
     assert service.stock_list == "600519,300750,AAPL"
     assert service.update_calls == ["600519,300750,AAPL"]
+
+
+def test_watchlist_batch_add_deduplicates_candidates_and_writes_once() -> None:
+    service = FakeSystemConfigService("600519,00700")
+
+    response = add_many_to_watchlist(
+        WatchlistBatchRequest(stock_codes=["HK00700", "300750", "AAPL", "aapl"]),
+        service=service,
+    )
+
+    assert response.stock_codes == ["600519", "00700", "300750", "AAPL"]
+    assert response.message == "已加入 2 只股票"
+    assert service.stock_list == "600519,00700,300750,AAPL"
+    assert service.update_calls == ["600519,00700,300750,AAPL"]

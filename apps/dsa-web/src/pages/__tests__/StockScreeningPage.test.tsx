@@ -9,6 +9,7 @@ const {
   getHotspots,
   getStrategies,
   getScreenTask,
+  addManyToWatchlist,
   navigate,
   resetLastScreenResult,
   screenStocks,
@@ -46,6 +47,7 @@ const {
     getHotspots: vi.fn(),
     getStrategies: vi.fn(),
     getScreenTask,
+    addManyToWatchlist: vi.fn(),
     navigate: vi.fn(),
     resetLastScreenResult: () => {
       lastScreenResult = null;
@@ -73,6 +75,12 @@ vi.mock('../../api/alphasift', () => ({
     getScreenTask: (taskId: string) => getScreenTask(taskId),
     screen: (payload: unknown) => screenStocks(payload),
     startScreen: (payload: unknown) => startScreenTask(payload),
+  },
+}));
+
+vi.mock('../../api/stocks', () => ({
+  stocksApi: {
+    addManyToWatchlist: (stockCodes: string[]) => addManyToWatchlist(stockCodes),
   },
 }));
 
@@ -111,6 +119,7 @@ describe('StockScreeningPage', () => {
     getHotspots.mockReset();
     getStrategies.mockReset();
     getScreenTask.mockClear();
+    addManyToWatchlist.mockReset();
     navigate.mockReset();
     resetLastScreenResult();
     screenStocks.mockReset();
@@ -142,6 +151,7 @@ describe('StockScreeningPage', () => {
       stockCount: 1,
     });
     getHotspots.mockResolvedValue({ enabled: true, provider: 'akshare', hotspots: [], hotspotCount: 0 });
+    addManyToWatchlist.mockResolvedValue({ stockCodes: ['600519', '300750'], message: '已加入 2 只股票' });
     window.sessionStorage.clear();
   });
 
@@ -816,6 +826,33 @@ describe('StockScreeningPage', () => {
     expect(screen.queryByText('旧策略股票')).not.toBeInTheDocument();
     expect(screen.getByText('等待运行')).toBeInTheDocument();
     expect(screen.getByText('当前策略：资金热度 · A 股')).toBeInTheDocument();
+  });
+
+  it('adds all screening candidates to the existing watchlist in one request', async () => {
+    getAlphaSiftStatus.mockResolvedValueOnce({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    screenStocks.mockResolvedValueOnce({
+      enabled: true,
+      candidates: [
+        { rank: 1, code: '600519', name: '贵州茅台', reason: 'candidate', raw: {} },
+        { rank: 2, code: '300750', name: '宁德时代', reason: 'candidate', raw: {} },
+      ],
+      candidateCount: 2,
+    });
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股已开启')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /运行选股/ }));
+    expect(await screen.findByText('贵州茅台')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '加入全部候选至自选' }));
+
+    await waitFor(() => expect(addManyToWatchlist).toHaveBeenCalledWith(['600519', '300750']));
+    expect(await screen.findByRole('status')).toHaveTextContent('已加入 2 只股票');
   });
 
   it('restores an in-flight screening task after remounting the page', async () => {

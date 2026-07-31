@@ -20,6 +20,10 @@ vi.mock('../../api/systemConfig', () => ({
   },
 }));
 
+vi.mock('../../api/alphasift', () => ({
+  SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
+}));
+
 describe('useWatchlist', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -82,5 +86,22 @@ describe('useWatchlist', () => {
 
     expect(mockRemoveFromWatchlist).toHaveBeenCalledWith('aapl');
     expect(mockAddToWatchlist).not.toHaveBeenCalled();
+  });
+
+  it('refreshes when another page changes the shared system configuration', async () => {
+    mockGetWatchlist
+      .mockResolvedValueOnce(['600519'])
+      .mockResolvedValueOnce(['600519', '300750']);
+
+    const { result } = renderHook(() => useWatchlist());
+
+    await waitFor(() => expect(result.current.watchlistCodes).toEqual(['600519']));
+
+    act(() => {
+      window.dispatchEvent(new Event('dsa-system-config-changed'));
+    });
+
+    await waitFor(() => expect(result.current.watchlistCodes).toEqual(['600519', '300750']));
+    expect(mockGetWatchlist).toHaveBeenCalledTimes(2);
   });
 });

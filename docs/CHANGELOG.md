@@ -2158,3 +2158,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 [1.1.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ZhuLinsen/daily_stock_analysis/releases/tag/v1.0.0
 - [修复] AlphaSift 的 MA60 趋势策略遇到不足 60 根的 DSA 或首选日线历史时，会继续尝试备用日线源；避免将不可计算的 MA60 误判为均线空头并清空全部候选。
+- [新功能] AlphaSift 选股结果支持一键将全部候选去重后加入既有自选股列表。

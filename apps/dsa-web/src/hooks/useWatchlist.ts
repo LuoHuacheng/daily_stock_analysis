@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SYSTEM_CONFIG_CHANGED_EVENT } from '../api/alphasift';
 import { systemConfigApi } from '../api/systemConfig';
 import { findMatchingStockCode, includesStockCode } from '../utils/stockCode';
 
@@ -50,6 +51,14 @@ export function useWatchlist(): UseWatchlistReturn {
         setIsLoading(false);
       }
     });
+  }, [refresh]);
+
+  useEffect(() => {
+    const handleSystemConfigChanged = () => {
+      void refresh();
+    };
+    window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, handleSystemConfigChanged);
+    return () => window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, handleSystemConfigChanged);
   }, [refresh]);
 
   const showMessage = useCallback((msg: string) => {

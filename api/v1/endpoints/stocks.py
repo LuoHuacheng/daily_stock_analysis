@@ -26,7 +26,7 @@ from api.v1.schemas.stocks import (
     StockHistoryResponse,
     StockQuote,
 )
-from api.v1.schemas.history import WatchlistRequest, WatchlistResponse
+from api.v1.schemas.history import WatchlistBatchRequest, WatchlistRequest, WatchlistResponse
 from api.v1.schemas.common import ErrorResponse
 from src.services.image_stock_extractor import (
     ALLOWED_MIME,
@@ -367,6 +367,48 @@ def add_to_watchlist(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"加入自选失败: {str(e)}"},
+        )
+
+
+@router.post(
+    "/watchlist/add-batch",
+    response_model=WatchlistResponse,
+    responses={
+        200: {"description": "已批量加入自选"},
+        400: {"description": "参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="批量加入自选队列",
+    description="将多个股票代码去重后一次性加入 STOCK_LIST。",
+)
+def add_many_to_watchlist(
+    request: WatchlistBatchRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> WatchlistResponse:
+    try:
+        validated_codes = [
+            (request_code.strip(), _validate_and_normalize_stock_code(request_code))
+            for request_code in request.stock_codes
+        ]
+        codes = _read_watchlist_codes(service)
+        existing_keys = {_watchlist_match_key(code) for code in codes}
+        added_count = 0
+        for raw_code, normalized_code in validated_codes:
+            match_key = _watchlist_match_key(normalized_code)
+            if match_key not in existing_keys:
+                codes.append(raw_code)
+                existing_keys.add(match_key)
+                added_count += 1
+        if added_count:
+            _write_watchlist_codes(service, codes)
+        return WatchlistResponse(stock_codes=codes, message=f"已加入 {added_count} 只股票")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"批量加入自选失败: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"批量加入自选失败: {str(e)}"},
         )
 
 

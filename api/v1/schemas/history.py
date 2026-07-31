@@ -390,6 +390,12 @@ class WatchlistRequest(BaseModel):
     stock_code: str = Field(..., description="股票代码", min_length=1)
 
 
+class WatchlistBatchRequest(BaseModel):
+    """批量加入自选队列请求。"""
+
+    stock_codes: List[str] = Field(..., description="待加入的股票代码", min_length=1, max_length=100)
+
+
 class WatchlistResponse(BaseModel):
     """自选队列响应"""
 

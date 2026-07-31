@@ -1,4 +1,5 @@
 import apiClient from './index';
+import { notifySystemConfigChanged } from './alphasift';
 
 export type ExtractItem = {
   code?: string | null;
@@ -12,7 +13,23 @@ export type ExtractFromImageResponse = {
   rawText?: string;
 };
 
+export type WatchlistResponse = {
+  stockCodes: string[];
+  message: string;
+};
+
 export const stocksApi = {
+  async addManyToWatchlist(stockCodes: string[]): Promise<WatchlistResponse> {
+    const response = await apiClient.post<{ stock_codes: string[]; message: string }>('/api/v1/stocks/watchlist/add-batch', {
+      stock_codes: stockCodes,
+    });
+    notifySystemConfigChanged();
+    return {
+      stockCodes: response.data.stock_codes ?? [],
+      message: response.data.message,
+    };
+  },
+
   async extractFromImage(file: File): Promise<ExtractFromImageResponse> {
     const formData = new FormData();
     formData.append('file', file);
