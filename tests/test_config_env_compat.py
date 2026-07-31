@@ -7,12 +7,32 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from requests.utils import should_bypass_proxies
+
 from src.config import Config, DEFAULT_ALPHASIFT_INSTALL_SPEC, setup_env
 
 
 class ConfigEnvCompatibilityTestCase(unittest.TestCase):
     def tearDown(self):
         Config.reset_instance()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_proxy_bypasses_eastmoney_kline_subdomains(
+        self, _mock_parse_stock_email_groups, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:7890"}, clear=True):
+            Config._load_from_env()
+            no_proxy = os.environ["NO_PROXY"]
+
+        self.assertIn(".eastmoney.com", no_proxy.split(","))
+        self.assertTrue(
+            should_bypass_proxies(
+                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+                no_proxy=no_proxy,
+            )
+        )
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])

@@ -1223,8 +1223,13 @@ class Config:
             # 国内金融数据源域名列表
             domestic_domains = [
                 'eastmoney.com',   # 东方财富 (Efinance/Akshare)
+                '.eastmoney.com',  # 东方财富子域（push2/push2his 等）
+                'push2.eastmoney.com',
+                'push2his.eastmoney.com',
                 'sina.com.cn',     # 新浪财经 (Akshare)
+                '.sina.com.cn',
                 '163.com',         # 网易财经 (Akshare)
+                '.163.com',
                 'tushare.pro',     # Tushare
                 'baostock.com',    # Baostock
                 'sse.com.cn',      # 上交所
