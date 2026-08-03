@@ -1,5 +1,5 @@
 import apiClient from './index';
-import { notifySystemConfigChanged } from './alphasift';
+import { notifySystemConfigChanged } from './screening';
 
 export type ExtractItem = {
   code?: string | null;

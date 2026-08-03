@@ -20,7 +20,7 @@ vi.mock('../../api/systemConfig', () => ({
   },
 }));
 
-vi.mock('../../api/alphasift', () => ({
+vi.mock('../../api/screening', () => ({
   SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
 }));
 

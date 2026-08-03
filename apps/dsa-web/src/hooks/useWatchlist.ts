@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { SYSTEM_CONFIG_CHANGED_EVENT } from '../api/alphasift';
+import { SYSTEM_CONFIG_CHANGED_EVENT } from '../api/screening';
 import { systemConfigApi } from '../api/systemConfig';
 import { findMatchingStockCode, includesStockCode } from '../utils/stockCode';
 
